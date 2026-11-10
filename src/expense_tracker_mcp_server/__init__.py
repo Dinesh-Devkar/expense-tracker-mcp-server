@@ -92,6 +92,72 @@ def get_all_expense():
     return cursor.fetchall()
 
 
+
+@mcp.tool
+def get_expenses_by_date(min_date: str, max_date: str):
+    """
+    Retrieve expense records from the ExpenseTracker database within a specified date range.
+
+    Use this tool when the user asks to view, list, or retrieve expenses
+    for a particular date, between two dates, or during a specific time
+    period such as a week, month, or year.
+
+    Args:
+        min_date (str): Start date of the expense search in YYYY-MM-DD format.
+            Expenses recorded on or after this date are included.
+
+        max_date (str): End date of the expense search in YYYY-MM-DD format.
+            Expenses recorded on or before this date are included.
+
+    Returns:
+        list[dict]: List of matching expense records containing:
+            - id: Unique expense identifier.
+            - date: Date of the expense.
+            - amount: Expense amount.
+            - category: Main expense category.
+            - subcategory: Expense subcategory.
+            - note: Additional expense description.
+
+        Returns an empty list if no matching expenses are found.
+        Returns a dictionary containing an error message if the query fails.
+    """
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+
+        query = """
+            SELECT id, date, amount, category, subcategory, note
+            FROM Expense
+            WHERE date BETWEEN ? AND ?
+            ORDER BY date DESC
+        """
+
+        cursor.execute(query, min_date, max_date)
+
+        rows = cursor.fetchall()
+
+        expenses = []
+
+        for row in rows:
+            expenses.append({
+                "id": row.id,
+                "date": str(row.date),
+                "amount": float(row.amount),
+                "category": row.category,
+                "subcategory": row.subcategory,
+                "note": row.note
+            })
+
+        return expenses
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    finally:
+        conn.close()
+
+
 @mcp.tool
 def add_expense(date, amount, category, subcategory, note):
     '''add expense into the expenses'''
