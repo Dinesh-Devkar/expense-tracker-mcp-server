@@ -1,44 +1,57 @@
 
 import os
-import sqlite3
+import aiosqlite
+
 from pathlib import Path
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
 load_dotenv()
 
-mcp = FastMCP(name="My-Remote-Expense-Tracker")
 
+# --------------------------------------
+# DATABASE CONFIGURATION
+# --------------------------------------
 
-# SQLite database file location
+DB_DIR = Path(
+    os.getenv("SQLITE_DB_DIR", "/tmp/expense_tracker")
+)
 
-# Use a writable directory for SQLite
-DB_DIR = Path(os.getenv("SQLITE_DB_DIR", "/tmp/expense_tracker"))
 DB_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DB_DIR / "ExpenseTracker.db"
 
 
-# SQLite database connection
-# def get_connection():
-#     conn = sqlite3.connect(DB_PATH, timeout=10)
-#     conn.row_factory = sqlite3.Row
-#     return conn
+# --------------------------------------
+# ASYNC DATABASE CONNECTION
+# --------------------------------------
 
-def get_connection():
-    conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    conn.row_factory = sqlite3.Row
-    return conn
+@asynccontextmanager
+async def get_connection():
+
+    async with aiosqlite.connect(
+        str(DB_PATH),
+        timeout=10
+    ) as conn:
+
+        conn.row_factory = aiosqlite.Row
+
+        yield conn
 
 
-# Initialize database and Expense table
-def initialize_database():
-    conn = get_connection()
+# --------------------------------------
+# ASYNC DATABASE INITIALIZATION
+# --------------------------------------
 
-    try:
-        cursor = conn.cursor()
+async def initialize_database():
 
-        cursor.execute("""
+    async with get_connection() as conn:
+
+        # Enable WAL mode for better concurrency
+        await conn.execute("PRAGMA journal_mode=WAL")
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS Expense (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT NOT NULL,
@@ -49,44 +62,67 @@ def initialize_database():
             )
         """)
 
-        conn.commit()
-
-    finally:
-        conn.close()
+        await conn.commit()
 
 
-initialize_database()
+# --------------------------------------
+# MCP SERVER LIFESPAN
+# --------------------------------------
 
+@asynccontextmanager
+async def app_lifespan(server: FastMCP):
+
+    # Initialize database at server startup
+    await initialize_database()
+
+    yield {}
+
+
+mcp = FastMCP(
+    name="My-Remote-Expense-Tracker",
+    lifespan=app_lifespan
+)
+
+
+# --------------------------------------
+# TOOL 1: GET ALL EXPENSES
+# --------------------------------------
 
 @mcp.tool
-def get_all_expense():
-    """Return all expenses from the ExpenseTracker database."""
+async def get_all_expense():
+    """
+    Retrieve all expense records from the
+    ExpenseTracker database.
 
-    conn = get_connection()
+    Returns:
+        list[dict]: All expense records.
+    """
 
-    try:
-        cursor = conn.cursor()
+    async with get_connection() as conn:
 
         query = "SELECT * FROM Expense"
-        cursor.execute(query)
 
-        rows = cursor.fetchall()
+        async with conn.execute(query) as cursor:
+            rows = await cursor.fetchall()
 
         return [dict(row) for row in rows]
 
-    finally:
-        conn.close()
 
+# --------------------------------------
+# TOOL 2: GET EXPENSES BY DATE
+# --------------------------------------
 
 @mcp.tool
-def get_expenses_by_date(min_date: str, max_date: str):
+async def get_expenses_by_date(
+    min_date: str,
+    max_date: str
+):
     """
-    Retrieve expense records from the ExpenseTracker database
-    within a specified date range.
+    Retrieve expenses within a specified date range.
 
-    Use this tool when the user asks to view, list, or retrieve
-    expenses for a particular date, between two dates, or during
-    a specific time period such as a week, month, or year.
+    Use this tool when users ask to view expenses
+    for a particular day, week, month, year, or
+    between two dates.
 
     Args:
         min_date (str): Start date in YYYY-MM-DD format.
@@ -96,51 +132,52 @@ def get_expenses_by_date(min_date: str, max_date: str):
             Expenses on or before this date are included.
 
     Returns:
-        list[dict]: List of matching expense records containing
-            id, date, amount, category, subcategory, and note.
-
-        Returns an empty list if no matching expenses are found.
+        list[dict]: Matching expense records.
+        Returns an empty list if none are found.
     """
 
-    conn = get_connection()
+    async with get_connection() as conn:
 
-    try:
-        cursor = conn.cursor()
+        try:
+            query = """
+                SELECT id, date, amount,
+                       category, subcategory, note
+                FROM Expense
+                WHERE date BETWEEN ? AND ?
+                ORDER BY date DESC
+            """
 
-        query = """
-            SELECT id, date, amount, category, subcategory, note
-            FROM Expense
-            WHERE date BETWEEN ? AND ?
-            ORDER BY date DESC
-        """
+            async with conn.execute(
+                query,
+                (min_date, max_date)
+            ) as cursor:
 
-        cursor.execute(query, (min_date, max_date))
+                rows = await cursor.fetchall()
 
-        rows = cursor.fetchall()
+            expenses = []
 
-        expenses = []
+            for row in rows:
+                expenses.append({
+                    "id": row["id"],
+                    "date": row["date"],
+                    "amount": float(row["amount"]),
+                    "category": row["category"],
+                    "subcategory": row["subcategory"],
+                    "note": row["note"]
+                })
 
-        for row in rows:
-            expenses.append({
-                "id": row["id"],
-                "date": row["date"],
-                "amount": float(row["amount"]),
-                "category": row["category"],
-                "subcategory": row["subcategory"],
-                "note": row["note"]
-            })
+            return expenses
 
-        return expenses
+        except Exception as e:
+            return {"error": str(e)}
 
-    except Exception as e:
-        return {"error": str(e)}
 
-    finally:
-        conn.close()
-
+# --------------------------------------
+# TOOL 3: ADD EXPENSE
+# --------------------------------------
 
 @mcp.tool
-def add_expense(
+async def add_expense(
     date: str,
     amount: float,
     category: str,
@@ -149,6 +186,8 @@ def add_expense(
 ):
     """
     Add a new expense record to the ExpenseTracker database.
+
+    Use this tool when users want to record a new expense.
 
     Args:
         date (str): Expense date in YYYY-MM-DD format.
@@ -161,37 +200,50 @@ def add_expense(
         dict: Success message and newly created expense ID.
     """
 
-    conn = get_connection()
+    async with get_connection() as conn:
 
-    try:
-        cursor = conn.cursor()
+        try:
+            query = """
+                INSERT INTO Expense
+                (date, amount, category, subcategory, note)
+                VALUES (?, ?, ?, ?, ?)
+            """
 
-        query = """
-            INSERT INTO Expense (date, amount, category, subcategory, note)
-            VALUES (?, ?, ?, ?, ?)
-        """
+            async with conn.execute(
+                query,
+                (
+                    date,
+                    amount,
+                    category,
+                    subcategory,
+                    note
+                )
+            ) as cursor:
 
-        cursor.execute(
-            query,
-            (date, amount, category, subcategory, note)
-        )
+                expense_id = cursor.lastrowid
 
-        expense_id = cursor.lastrowid
+            await conn.commit()
 
-        conn.commit()
+            return {
+                "message": "Expense added successfully",
+                "expense_id": expense_id
+            }
 
-        return {
-            "message": "Expense added successfully",
-            "expense_id": expense_id
-        }
+        except Exception as e:
 
-    except Exception as e:
-        conn.rollback()
-        return {"error": str(e)}
+            await conn.rollback()
 
-    finally:
-        conn.close()
+            return {"error": str(e)}
 
+
+# --------------------------------------
+# RUN REMOTE MCP SERVER
+# --------------------------------------
 
 if __name__ == "__main__":
-    mcp.run(transport='http', host="0.0.0.0", port=8000)
+
+    mcp.run(
+        transport="http",
+        host="0.0.0.0",
+        port=8000
+    )
