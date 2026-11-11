@@ -11,17 +11,22 @@ mcp = FastMCP(name="My-Remote-Expense-Tracker")
 
 
 # SQLite database file location
-DB_PATH = Path(
-    os.getenv(
-        "SQLITE_DB_PATH",
-        str(Path(__file__).resolve().parent / "ExpenseTracker.db")
-    )
-)
+
+# Use a writable directory for SQLite
+DB_DIR = Path(os.getenv("SQLITE_DB_DIR", "/tmp/expense_tracker"))
+DB_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_PATH = DB_DIR / "ExpenseTracker.db"
 
 
 # SQLite database connection
+# def get_connection():
+#     conn = sqlite3.connect(DB_PATH, timeout=10)
+#     conn.row_factory = sqlite3.Row
+#     return conn
+
 def get_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
