@@ -1,126 +1,102 @@
-# import random
-# from fastmcp import FastMCP
-
-# mcp=FastMCP(name='my-first-mcp')
-
-# @mcp.tool
-# def roll_dice(n_dice: int) -> list[int]:
-#     """
-#     Roll one or more fair six-sided dice and return the results.
-
-#     Use this tool whenever the user wants to roll dice or
-#     generate random dice outcomes.
-
-#     Args:
-#         n_dice (int): Number of six-sided dice to roll.
-#                       Must be a positive integer.
-
-#     Returns:
-#         list[int]: Results of the dice rolls, where each
-#                    result is between 1 and 6.
-
-#     Example:
-#         n_dice = 3
-#         Returns: [2, 5, 1]
-#     """
-
-#     if isinstance(n_dice, bool) or not isinstance(n_dice, int):
-#         raise TypeError("n_dice must be an integer")
-
-#     if n_dice <= 0:
-#         raise ValueError("n_dice must be greater than zero")
-
-#     return [random.randint(1, 6) for _ in range(n_dice)]
-
-
-# @mcp.tool
-# def add_two_numbers(first_number:int,second_number:int)->int:
-#     '''do addition of two numbers and return their sum'''
-#     return first_number + second_number
-
-# if __name__ == '__main__':
-#     mcp.run()
-
-
-
-
 
 import os
-import pyodbc
+import sqlite3
+from pathlib import Path
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+
 load_dotenv()
 
-mcp = FastMCP(name='My-Expense-Tracker')
+mcp = FastMCP(name="My-Remote-Expense-Tracker")
 
 
-def get_connection(database=None, autocommit=False):
-
-    server = os.getenv("SQL_SERVER")
-    # database = database or os.getenv(
-    #     "SQL_DATABASE", "BrandPulseDB"
-    # )
-
-    database='ExpenseTracker'
-
-    if not server:
-        raise ValueError("SQL_SERVER is missing from .env")
-
-    connection_string = (
-        "DRIVER={ODBC Driver 18 for SQL Server};"
-        f"SERVER={server};"
-        f"DATABASE={database};"
-        "Trusted_Connection=yes;"
-        "Encrypt=yes;"
-        "TrustServerCertificate=yes;"
+# SQLite database file location
+DB_PATH = Path(
+    os.getenv(
+        "SQLITE_DB_PATH",
+        str(Path(__file__).resolve().parent / "ExpenseTracker.db")
     )
+)
 
-    return pyodbc.connect(
-        connection_string,
-        autocommit=autocommit,
-        timeout=10
-    )
+
+# SQLite database connection
+def get_connection():
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# Initialize database and Expense table
+def initialize_database():
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Expense (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                amount REAL NOT NULL,
+                category TEXT NOT NULL,
+                subcategory TEXT,
+                note TEXT
+            )
+        """)
+
+        conn.commit()
+
+    finally:
+        conn.close()
+
+
+initialize_database()
 
 
 @mcp.tool
 def get_all_expense():
-    '''return all the expenses'''
-    conn = get_connection()
-    cursor = conn.cursor()
-    query="""select * from [dbo].[Expense]"""
-    cursor.execute(query)
-    return cursor.fetchall()
+    """Return all expenses from the ExpenseTracker database."""
 
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+
+        query = "SELECT * FROM Expense"
+        cursor.execute(query)
+
+        rows = cursor.fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        conn.close()
 
 
 @mcp.tool
 def get_expenses_by_date(min_date: str, max_date: str):
     """
-    Retrieve expense records from the ExpenseTracker database within a specified date range.
+    Retrieve expense records from the ExpenseTracker database
+    within a specified date range.
 
-    Use this tool when the user asks to view, list, or retrieve expenses
-    for a particular date, between two dates, or during a specific time
-    period such as a week, month, or year.
+    Use this tool when the user asks to view, list, or retrieve
+    expenses for a particular date, between two dates, or during
+    a specific time period such as a week, month, or year.
 
     Args:
-        min_date (str): Start date of the expense search in YYYY-MM-DD format.
-            Expenses recorded on or after this date are included.
+        min_date (str): Start date in YYYY-MM-DD format.
+            Expenses on or after this date are included.
 
-        max_date (str): End date of the expense search in YYYY-MM-DD format.
-            Expenses recorded on or before this date are included.
+        max_date (str): End date in YYYY-MM-DD format.
+            Expenses on or before this date are included.
 
     Returns:
-        list[dict]: List of matching expense records containing:
-            - id: Unique expense identifier.
-            - date: Date of the expense.
-            - amount: Expense amount.
-            - category: Main expense category.
-            - subcategory: Expense subcategory.
-            - note: Additional expense description.
+        list[dict]: List of matching expense records containing
+            id, date, amount, category, subcategory, and note.
 
         Returns an empty list if no matching expenses are found.
-        Returns a dictionary containing an error message if the query fails.
     """
+
     conn = get_connection()
 
     try:
@@ -133,7 +109,7 @@ def get_expenses_by_date(min_date: str, max_date: str):
             ORDER BY date DESC
         """
 
-        cursor.execute(query, min_date, max_date)
+        cursor.execute(query, (min_date, max_date))
 
         rows = cursor.fetchall()
 
@@ -141,12 +117,12 @@ def get_expenses_by_date(min_date: str, max_date: str):
 
         for row in rows:
             expenses.append({
-                "id": row.id,
-                "date": str(row.date),
-                "amount": float(row.amount),
-                "category": row.category,
-                "subcategory": row.subcategory,
-                "note": row.note
+                "id": row["id"],
+                "date": row["date"],
+                "amount": float(row["amount"]),
+                "category": row["category"],
+                "subcategory": row["subcategory"],
+                "note": row["note"]
             })
 
         return expenses
@@ -159,8 +135,27 @@ def get_expenses_by_date(min_date: str, max_date: str):
 
 
 @mcp.tool
-def add_expense(date, amount, category, subcategory, note):
-    '''add expense into the expenses'''
+def add_expense(
+    date: str,
+    amount: float,
+    category: str,
+    subcategory: str,
+    note: str
+):
+    """
+    Add a new expense record to the ExpenseTracker database.
+
+    Args:
+        date (str): Expense date in YYYY-MM-DD format.
+        amount (float): Expense amount.
+        category (str): Main expense category.
+        subcategory (str): Expense subcategory.
+        note (str): Additional expense description.
+
+    Returns:
+        dict: Success message and newly created expense ID.
+    """
+
     conn = get_connection()
 
     try:
@@ -168,20 +163,15 @@ def add_expense(date, amount, category, subcategory, note):
 
         query = """
             INSERT INTO Expense (date, amount, category, subcategory, note)
-            OUTPUT INSERTED.id
             VALUES (?, ?, ?, ?, ?)
         """
 
         cursor.execute(
             query,
-            date,
-            amount,
-            category,
-            subcategory,
-            note
+            (date, amount, category, subcategory, note)
         )
 
-        expense_id = cursor.fetchone()[0]
+        expense_id = cursor.lastrowid
 
         conn.commit()
 
@@ -198,18 +188,5 @@ def add_expense(date, amount, category, subcategory, note):
         conn.close()
 
 
-
 if __name__ == "__main__":
-    mcp.run()
-    # pass
-    # conn = get_connection()
-    # cursor = conn.cursor()
-
-    # data= get_all_brands(cursor=cursor)
-    # print(data)
-    # # try:
-    # #     print("Successfully connected to SQL Server!")
-    # #     print("Database:", conn.getinfo(pyodbc.SQL_DATABASE_NAME))
-    # # finally:
-    # #     conn.close()
-
+    mcp.run(transport='http', host="0.0.0.0", port=8000)
